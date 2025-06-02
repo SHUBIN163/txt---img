@@ -15,8 +15,8 @@ A powerful web application that transforms text content into stunning AI-generat
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/textoimg.git
-   cd textoimg
+   git clone https://github.com/SHUBIN163/txt---img.git
+   cd txt---img
    ```
 
 2. Install dependencies:
@@ -32,7 +32,8 @@ A powerful web application that transforms text content into stunning AI-generat
 
 4. Run the application:
    ```bash
-   streamlit run app.py
+   source venv/bin/activate
+   python3 -m streamlit run app.py
    ```
 
 ## Usage
