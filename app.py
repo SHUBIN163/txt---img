@@ -7,13 +7,18 @@ from PIL import Image, ImageEnhance, ImageStat, ImageDraw
 import io
 import json
 import numpy as np
+from typing import List
+from image_selector import ImageSelector
 
 # Load environment variables
 load_dotenv()
 
 # Initialize API keys
-OPENROUTER_KEY = os.getenv("OPENROUTER_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 APIFY_TOKEN = os.getenv("APIFY_TOKEN")
+
+# Initialize ImageSelector
+image_selector = ImageSelector()
 
 # Customizable prompts
 SYSTEM_PROMPT = """ You are a professional visual researcher tasked with helping an image search system. Your goal is to generate two search phrases that would return the most relevant, realistic, and high-quality photos for a given text input (such as a news article, blog post, or social media post).
@@ -24,25 +29,17 @@ Image 1 search target: [first search phrase]
 Image 2 search target: [second search phrase]
 Follow these rules when writing your search phrases:
 
-Be specific and avoid generic terms like “people” or “technology.”
-Focus on the key subjects, actions, or objects mentioned in the text.
-Use natural, simple language — like what you would type into Google Images.
-Make each phrase different but related to the same topic.
-Make sure both phrases would return real, high-quality, news-style photos.
-Don’t include any extra words like “photo of” or “image of.” Just describe the scene or object directly.
-No stylized or AI-related terms — focus on real-world imagery.
-Example:
-For a post about Elon Musk revealing a new Tesla model at a press event, your output could be:
-
-Image 1 search target: Elon Musk speaking at Tesla press conference  
-Image 2 search target: Tesla Model Y on display at event
-Only return the two search lines. No additional commentary or formatting."""
+Be specific and avoid generic terms like \"people\" or \"technology.\"\nFocus on the key subjects, actions, or objects mentioned in the text.\nUse natural, simple language — like what you would type into Google Images.\nMake each phrase different but related to the same topic.\nMake sure both phrases would return real, high-quality, news-style photos.\nDon't include any extra words like \"photo of\" or \"image of.\" Just describe the scene or object directly.\nNo stylized or AI-related terms — focus on real-world imagery.\nExample:\nFor a post about Elon Musk revealing a new Tesla model at a press event, your output could be:\n\nImage 1 search target: Elon Musk speaking at Tesla press conference  \nImage 2 search target: Tesla Model Y on display at event\nOnly return the two search lines. No additional commentary or formatting."""
 
 def generate_search_phrases(text: str) -> tuple[str, str] | None:
     """Generate two search phrases using OpenRouter's GPT-4."""
     try:
+        if not OPENROUTER_API_KEY:
+            st.error("OPENROUTER_API_KEY not found in environment variables. Please set it up.")
+            return None
+            
         headers = {
-            "Authorization": f"Bearer {OPENROUTER_KEY}",
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json"
         }
 
@@ -75,89 +72,9 @@ def generate_search_phrases(text: str) -> tuple[str, str] | None:
         st.error(f"Error generating search phrases: {str(e)}")
         return None
 
-def has_watermark(img: Image.Image) -> bool:
-    """
-    Detect if an image has a watermark by analyzing corner regions for high contrast patterns.
-    Returns True if a watermark is detected, False otherwise.
-    """
-    try:
-        # Convert to grayscale
-        grayscale = img.convert("L")
-        width, height = img.size
-        
-        # Define corner regions to check (100x100 pixels)
-        corner_size = min(100, width // 4, height // 4)  # Ensure corner size is reasonable
-        corners = [
-            grayscale.crop((0, 0, corner_size, corner_size)),  # top-left
-            grayscale.crop((width - corner_size, 0, width, corner_size)),  # top-right
-            grayscale.crop((0, height - corner_size, corner_size, height)),  # bottom-left
-            grayscale.crop((width - corner_size, height - corner_size, width, height))  # bottom-right
-        ]
-        
-        # Create a debug image to show the regions being checked
-        debug_img = img.copy()
-        draw = ImageDraw.Draw(debug_img)
-        
-        # Draw rectangles around the regions being checked
-        regions = [
-            (0, 0, corner_size, corner_size),  # top-left
-            (width - corner_size, 0, width, corner_size),  # top-right
-            (0, height - corner_size, corner_size, height),  # bottom-left
-            (width - corner_size, height - corner_size, width, height)  # bottom-right
-        ]
-        
-        watermark_detected = False
-        detection_results = []
-        
-        # Check each corner for watermark-like patterns
-        for i, (region, corner) in enumerate(zip(corners, regions)):
-            # Calculate statistics for the region
-            stat = ImageStat.Stat(region)
-            
-            # Check for high contrast (difference between max and min values)
-            contrast = stat.extrema[0][1] - stat.extrema[0][0]
-            std_dev = stat.stddev[0]
-            
-            # Store detection results
-            result = {
-                "region": f"Corner {i+1}",
-                "contrast": contrast,
-                "std_dev": std_dev,
-                "detected": contrast > 100 and std_dev > 50
-            }
-            detection_results.append(result)
-            
-            # Draw rectangle with color based on detection
-            color = (255, 0, 0) if result["detected"] else (0, 255, 0)  # Red if watermark detected, green if clean
-            draw.rectangle(corner, outline=color, width=3)
-            
-            if result["detected"]:
-                watermark_detected = True
-        
-        # Display the debug image and detection results
-        st.write("🔍 Image Analysis:")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.image(debug_img, caption="Image Analysis", use_column_width=True)
-        
-        with col2:
-            st.write("Analysis Results:")
-            for result in detection_results:
-                status = "⚠️ Possible text/logo" if result["detected"] else "✅ Clean"
-                st.write(f"{result['region']}: {status}")
-        
-        if watermark_detected:
-            st.warning("⚠️ Note: This image may contain text, logos, or watermarks in the corners. Please review before use.")
-        
-        return False  # Always return False to allow the image to be used
-        
-    except Exception as e:
-        st.write(f"Warning: Error during image analysis: {str(e)}")
-        return False  # If detection fails, assume no watermark
-
-def search_google_images(search_phrase: str) -> str | None:
-    """Search for images using Apify's Google Images Scraper with polling."""
+def search_google_images(search_phrase: str) -> List[str]:
+    """Search for images using Apify's Google Images Scraper and return a list of up to 5 high-res image URLs."""
+    image_urls = []
     try:
         st.write(f"Starting Apify Google Images search run for: '{search_phrase}'")
 
@@ -166,7 +83,7 @@ def search_google_images(search_phrase: str) -> str | None:
         
         payload = {
             "queries": [search_phrase],
-            "maxResultsPerQuery": 10,  # Increased to have more options for high-res images
+            "maxResultsPerQuery": 10,  # Fetch an initial batch, will process all available dataset items later
             "includeHtml": False,
             "includeOgp": False
         }
@@ -185,43 +102,54 @@ def search_google_images(search_phrase: str) -> str | None:
 
         # 2. Poll for run completion
         run_status_url = f"https://api.apify.com/v2/actor-runs/{run_id}?token={APIFY_TOKEN}"
-        st.write("Polling for run completion...")
+        
+        status_placeholder = st.empty() # Create a placeholder for the status message
+        status_placeholder.write("Polling for run completion...")
+
         while True:
-            status_response = requests.get(run_status_url)
+            status_response = requests.get(run_status_url, timeout=90) # Polling timeout
             status_response.raise_for_status()
             status_data = status_response.json()
             
             run_status = status_data["data"]["status"]
-            st.write(f"Run status: {run_status}...")
+            status_placeholder.write(f"Run status: {run_status}...") # Update the placeholder without spinner
 
             if run_status in ["SUCCEEDED", "FAILED", "ABORTED", "TIMED_OUT"]:
                 break
             
-            time.sleep(3) # Wait for 3 seconds before polling again
+            time.sleep(1.5) # Wait before polling again
 
         if run_status != "SUCCEEDED":
-            st.error(f"Apify run failed with status: {run_status}")
-            return None
+            status_placeholder.error(f"Apify run failed with status: {run_status}") # Show final status
+            return image_urls
 
-        st.write("Apify run succeeded. Fetching results...")
+        status_placeholder.success("Apify run succeeded.") # Show final status
 
-        # 3. Fetch results from the dataset
+        st.write("Fetching results...")
+
+        # 3. Fetch ALL results from the dataset and find up to 5 valid images
         dataset_items_url = f"https://api.apify.com/v2/actor-runs/{run_id}/dataset/items?token={APIFY_TOKEN}"
-        results_response = requests.get(dataset_items_url)
+        # Fetch ALL available items
+        results_response = requests.get(dataset_items_url, params={'limit': 99999}) # Fetch a high limit to get all items
         results_response.raise_for_status()
         
         if not results_response.text:
             st.error("Received empty dataset items response from Apify.")
-            return None
+            return image_urls
 
         results_data = results_response.json()
         
-        # Filter for high-resolution images
+        # Filter for high-resolution images and collect up to 5 VALID image URLs
         MIN_WIDTH = 800
         MIN_HEIGHT = 600
+        MAX_VALID_CANDIDATES = 5 
         
-        high_res_images = []
+        st.write(f"Processing {len(results_data)} potential image candidates from dataset...")
+
         for item in results_data:
+            if len(image_urls) >= MAX_VALID_CANDIDATES:
+                break # Stop once we have enough valid images
+                
             # First try to get the full-size image URL
             image_url = item.get("imageUrl")
             if not image_url:
@@ -233,70 +161,70 @@ def search_google_images(search_phrase: str) -> str | None:
             if not image_url:
                 continue  # Skip if no URL is available
                 
-            # Get image dimensions from metadata
-            width = item.get("imageWidth", 0)
-            height = item.get("imageHeight", 0)
+            # Get image dimensions from metadata (can be inaccurate)
+            metadata_width = item.get("imageWidth", 0)
+            metadata_height = item.get("imageHeight", 0)
             
-            if width >= MIN_WIDTH and height >= MIN_HEIGHT:
+            # Prioritize images with metadata indicating sufficient size, but always validate with PIL
+            if metadata_width >= MIN_WIDTH and metadata_height >= MIN_HEIGHT:
                 try:
-                    # Validate the image by downloading it
+                    # Download the full image to validate with PIL
                     response = requests.get(image_url, timeout=10)
                     response.raise_for_status()
-                    
-                    # Verify it's actually an image
+
+                    # Verify it's actually an image content type
                     content_type = response.headers.get('content-type', '')
                     if not content_type.startswith('image/'):
-                        st.write(f"Skipping non-image content: {content_type}")
-                        continue
-                        
-                    # Open image to verify dimensions
-                    img = Image.open(io.BytesIO(response.content))
-                    actual_width, actual_height = img.size
-                    
-                    # Verify actual dimensions match metadata
+                         st.write(f"Skipping non-image content: {content_type} for {image_url}")
+                         continue
+
+                    try:
+                         img = Image.open(io.BytesIO(response.content))
+                         actual_width, actual_height = img.size
+                    except Exception as img_e:
+                         st.write(f"Error opening image with PIL {image_url}: {img_e}")
+                         continue # Skip this image if PIL fails to open it
+
+                    # Verify actual dimensions match the minimum requirement
                     if actual_width >= MIN_WIDTH and actual_height >= MIN_HEIGHT:
-                        high_res_images.append({
-                            "url": image_url,
-                            "width": actual_width,
-                            "height": actual_height,
-                            "content_type": content_type,
-                            "image": img  # Store the image object for later watermark check
-                        })
-                        st.write(f"Found high-res image: {actual_width}x{actual_height} ({content_type})")
+                        image_urls.append(image_url)
+                        st.write(f"Found valid high-res image candidate: {actual_width}x{actual_height} ({content_type}) from {image_url}")
                     else:
-                        st.write(f"Skipping image with mismatched dimensions: metadata={width}x{height}, actual={actual_width}x{actual_height}")
+                        st.write(f"Skipping image with insufficient actual dimensions: {actual_width}x{actual_height} from {image_url}")
                         
                 except Exception as e:
-                    st.write(f"Error validating image {image_url}: {str(e)}")
-                    continue
+                    # Catching potential errors during image validation/download for a single candidate
+                    st.write(f"Error validating or downloading image candidate {image_url}: {str(e)}")
+                    # DO NOT return here, continue to the next image
         
-        if not high_res_images:
-            st.warning(f"No suitable high-resolution images found (min {MIN_WIDTH}x{MIN_HEIGHT}) for search phrase: {search_phrase}")
-            return None
+        if not image_urls:
+            st.warning(f"No suitable high-resolution image candidates found (min {MIN_WIDTH}x{MIN_HEIGHT}) for search phrase: {search_phrase}")
+        else:
+            st.success(f"Successfully collected {len(image_urls)} valid image candidates.")
             
-        # Sort by resolution (width * height) and take the highest
-        best_image = max(high_res_images, key=lambda x: x["width"] * x["height"])
-        st.write(f"Selected best image: {best_image['width']}x{best_image['height']} ({best_image['content_type']})")
-        
-        # Check for watermark only on the best image
-        st.write("🔍 Analyzing selected image...")
-        has_watermark(best_image["image"])  # Just show the analysis, don't block the image
-        
-        return best_image["url"]
+        return image_urls # Return the list of found valid image URLs
 
     except requests.exceptions.RequestException as e:
-        st.error(f"Error during Apify Google Images search polling process: {e}")
-        st.error(f"Last known response content: {response.text if 'response' in locals() and response.text else 'N/A'}")
-        return None
+        st.error(f"Error during Apify Google Images search polling or results fetch: {e}")
+        # Check if response object exists before accessing .text
+        last_response_text = 'N/A'
+        if 'start_response' in locals() and start_response and start_response.text:
+             last_response_text = start_response.text
+        elif 'status_response' in locals() and status_response and status_response.text:
+             last_response_text = status_response.text
+        elif 'results_response' in locals() and results_response and results_response.text:
+             last_response_text = results_response.text
+        st.error(f"Last known response content: {last_response_text}")
+        return image_urls # Return partial results or empty list on error
     except json.JSONDecodeError as e:
          st.error(f"Error parsing Apify Google Images response as JSON during polling or results fetch: {e}.")
          last_response_text = 'N/A'
-         if 'status_response' in locals() and status_response.text:
+         if 'status_response' in locals() and status_response and status_response.text:
              last_response_text = status_response.text
-         elif 'results_response' in locals() and results_response.text:
+         elif 'results_response' in locals() and results_response and results_response.text:
              last_response_text = results_response.text
          st.error(f"Raw response text: {last_response_text}")
-         return None
+         return image_urls # Return partial results or empty list on error
     except KeyError as e:
          st.error(f"Error parsing Apify Google Images response: Missing key {e}. Response structure might have changed.")
          last_data = 'N/A'
@@ -305,10 +233,10 @@ def search_google_images(search_phrase: str) -> str | None:
          elif 'results_data' in locals():
              last_data = results_data
          st.error(f"Response data: {last_data}")
-         return None
+         return image_urls # Return partial results or empty list on error
     except Exception as e:
         st.error(f"An unexpected error occurred during Google Images search: {str(e)}")
-        return None
+        return image_urls # Return partial results or empty list on error
 
 def download_image(url: str) -> bytes | None:
     """Download an image from a URL."""
@@ -372,12 +300,12 @@ def create_and_save_collage(image1_bytes: bytes, image2_bytes: bytes, output_pat
 
 def main():
     st.title("Article Image Generator")
-    st.write("Enter an article or text to generate two complementary images.")
+    st.write("Enter an article or text to generate two complementary images.") # Reverted description
 
     # Text input
     text_input = st.text_area("Enter your article text:", height=200)
 
-    if st.button("Generate Images"):
+    if st.button("Generate Images"): # Reverted button text
         if not text_input:
             st.warning("Please enter some text first.")
             return
@@ -396,46 +324,102 @@ def main():
                 st.write(f"1. {phrase1}")
                 st.write(f"2. {phrase2}")
 
-                # Step 2: Search for images
-                st.subheader("Step 2: Finding High-Quality Images")
+                # Step 2: Find Candidate Images for Phrase 1
+                st.subheader(f"Step 2: Finding Candidate Images for '{phrase1}'")
+                candidate_image_urls_1 = []
                 
-                # Create two columns for image search progress
-                col1, col2 = st.columns(2)
+                with st.spinner(f"Searching for up to 10 image candidates using phrase: '{phrase1}'..."):
+                    candidate_image_urls_1 = search_google_images(phrase1)
+
+                if not candidate_image_urls_1:
+                    st.error(f"No suitable image candidates found for '{phrase1}'. Cannot proceed with image generation.")
+                    return # Stop if no candidates are found for the first phrase
+
+                st.success(f"Found {len(candidate_image_urls_1)} image candidates for '{phrase1}'.")
+
+                # Step 3: Find Candidate Images for Phrase 2
+                st.subheader(f"Step 3: Finding Candidate Images for '{phrase2}'")
+                candidate_image_urls_2 = []
                 
-                image_url1 = None
-                image_url2 = None
-                image_data1 = None
-                image_data2 = None
+                with st.spinner(f"Searching for up to 10 image candidates using phrase: '{phrase2}'..."):
+                    candidate_image_urls_2 = search_google_images(phrase2)
+                    
+                if not candidate_image_urls_2:
+                     st.error(f"No suitable image candidates found for '{phrase2}'. Cannot proceed with image generation.")
+                     return # Stop if no candidates are found for the second phrase
 
-                # Search for first image
-                with col1:
-                    st.write("🔍 First Image Search")
-                    with st.spinner("Searching..."):
-                        image_url1 = search_google_images(phrase1)
+                st.success(f"Found {len(candidate_image_urls_2)} image candidates for '{phrase2}'.")
+                
+                # Step 4: Select the Best Image for Phrase 1 using AI
+                st.subheader(f"Step 4: Selecting the Best Image for '{phrase1}' with AI")
+                
+                # Ensure we have at least 5 candidates for GPT-4 input (pad if necessary)
+                while len(candidate_image_urls_1) < 5 and candidate_image_urls_1:
+                     candidate_image_urls_1.append(candidate_image_urls_1[0]) # Pad with duplicates
+                while len(candidate_image_urls_1) < 5:
+                     # This case should ideally not be reached if search_google_images returns at least one image on success
+                     st.error(f"Insufficient image candidates for '{phrase1}' even with padding. Cannot proceed with AI selection.")
+                     return
 
-                # Search for second image
-                with col2:
-                    st.write("🔍 Second Image Search")
-                    with st.spinner("Searching..."):
-                        image_url2 = search_google_images(phrase2)
+                best_image_url_1, selection_reasoning_1 = None, None
+                with st.spinner(f"Asking AI to select the best image for '{phrase1}'..."):
+                    best_image_url_1, selection_reasoning_1 = image_selector.choose_best_image(text_input, candidate_image_urls_1[:5]) # Pass exactly 5 URLs
 
-                # Step 3: Download images
-                st.subheader("Step 3: Processing Images")
+                if best_image_url_1:
+                    st.success(f"AI selected the best image for '{phrase1}'!")
+                    st.info("AI Selection Reasoning for Image 1:")
+                    st.write(selection_reasoning_1)
+                    st.write(f"Selected Image 1 URL: {best_image_url_1}")
+                else:
+                    st.error(f"AI failed to select a suitable image for '{phrase1}'.")
+                    return # Stop if AI selection fails for the first image
+
+                # Step 5: Select the Best Image for Phrase 2 using AI
+                st.subheader(f"Step 5: Selecting the Best Image for '{phrase2}' with AI")
+
+                # Ensure we have at least 5 candidates for GPT-4 input (pad if necessary)
+                while len(candidate_image_urls_2) < 5 and candidate_image_urls_2:
+                     candidate_image_urls_2.append(candidate_image_urls_2[0]) # Pad with duplicates
+                while len(candidate_image_urls_2) < 5:
+                     # This case should ideally not be reached
+                     st.error(f"Insufficient image candidates for '{phrase2}' even with padding. Cannot proceed with AI selection.")
+                     return
+
+                best_image_url_2, selection_reasoning_2 = None, None
+                with st.spinner(f"Asking AI to select the best image for '{phrase2}'..."):
+                    best_image_url_2, selection_reasoning_2 = image_selector.choose_best_image(text_input, candidate_image_urls_2[:5]) # Pass exactly 5 URLs
+
+                if best_image_url_2:
+                    st.success(f"AI selected the best image for '{phrase2}'!")
+                    st.info("AI Selection Reasoning for Image 2:")
+                    st.write(selection_reasoning_2)
+                    st.write(f"Selected Image 2 URL: {best_image_url_2}")
+                else:
+                    st.error(f"AI failed to select a suitable image for '{phrase2}'.")
+                    return # Stop if AI selection fails for the second image
+
+                # --- Display Selected Images Separately ---
+                st.subheader("Step 6: Selected Images")
+                st.image(best_image_url_1, caption="Selected Image 1", use_column_width=True)
+                st.image(best_image_url_2, caption="Selected Image 2", use_column_width=True)
+                st.write("Review the selected images above before proceeding to the collage.")
+                # ------------------------------------------
+
+                # Step 6: Download Selected Images
+                st.subheader("Step 7: Downloading Selected Images")
                 progress_bar = st.progress(0)
                 
-                if image_url1:
-                    st.write("📥 Downloading first image...")
-                    image_data1 = download_image(image_url1)
-                    progress_bar.progress(50)
+                st.write("📥 Downloading first selected image...")
+                image_data1 = download_image(best_image_url_1)
+                progress_bar.progress(50)
 
-                if image_url2:
-                    st.write("📥 Downloading second image...")
-                    image_data2 = download_image(image_url2)
-                    progress_bar.progress(100)
+                st.write("📥 Downloading second selected image...")
+                image_data2 = download_image(best_image_url_2)
+                progress_bar.progress(100)
 
-                # Step 4: Create collage
+                # Step 7: Create Collage
                 if image_data1 and image_data2:
-                    st.subheader("Step 4: Creating Collage")
+                    st.subheader("Step 8: Creating Collage")
                     with st.spinner("Combining images..."):
                         collage_path = create_and_save_collage(image_data1, image_data2)
                         if collage_path:
@@ -451,7 +435,10 @@ def main():
                                     mime="image/jpeg"
                                 )
                 else:
-                    st.error("Failed to create collage. Please try again with different search phrases.")
+                    st.error("Failed to download one or both selected images. Cannot create collage.")
+
+            else:
+                st.error("Failed to generate search phrases. Please try again.")
 
 if __name__ == "__main__":
     main() 
