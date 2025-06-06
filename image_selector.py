@@ -11,7 +11,7 @@ import re
 load_dotenv()
 
 class ImageSelector:
-    def __init__(self, model_name: str = "meta-llama/llama-3.2-90b-vision-instruct"):
+    def __init__(self, model_name: str = "gpt-4-vision-preview"):
         # Use OpenRouter API key
         self.openrouter_key = os.getenv('OPENROUTER_API_KEY')
         if not self.openrouter_key:
@@ -178,11 +178,13 @@ DO NOT include any other text, formatting, or commentary outside of these two li
                 }
             ]
             
-            # Add each image to the messages
+            # Add each image to the messages with the new GPT-4 Vision format
             for encoded_img in encoded_images:
                 messages[0]["content"].append({
-                    "type": "image",
-                    "image": encoded_img
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{encoded_img}"
+                    }
                 })
             
             data = {
@@ -208,7 +210,8 @@ DO NOT include any other text, formatting, or commentary outside of these two li
             if 'choices' in result and len(result['choices']) > 0:
                 if 'message' in result['choices'][0] and 'content' in result['choices'][0]['message']:
                     model_response = result['choices'][0]['message']['content']
-                # else: Handle cases where 'message' or 'content' might be missing if needed
+                else:
+                    raise ValueError("Unexpected response format: missing message or content")
             else:
                 raise ValueError(f"Unexpected response format from vision model: {json.dumps(result)}")
             
@@ -248,29 +251,15 @@ DO NOT include any other text, formatting, or commentary outside of these two li
                  print(f"AI selected image index: {selected_index}")
                  return selected_image_url, reasoning
             else:
-                 print("Warning: Could not reliably extract image index from AI response.")
-                 # Fallback if parsing failed
-                 if processed_image_urls:
-                     print("Using first image as fallback due to parsing issues")
-                     return processed_image_urls[0], f"Error parsing AI response. Using first image as fallback. Raw response: {model_response.strip()}"
-                 else:
-                      return (None, f"Error parsing AI response and no valid images available for fallback. Raw response: {model_response.strip()}")
-            
+                print("Failed to parse a valid image selection from the AI response.")
+                return (None, "Failed to parse AI response.")
+                
         except requests.exceptions.RequestException as e:
             print(f"API request error: {str(e)}")
-            # Fallback on API error
-            if processed_image_urls:
-                 return (processed_image_urls[0], f"API request error: {str(e)}. Using the first image as a fallback.")
             return (None, f"API request error: {str(e)}")
         except json.JSONDecodeError as e:
-            print(f"Error parsing API response JSON: {str(e)}")
-            # Fallback on JSON parsing error
-            if processed_image_urls:
-                 return (processed_image_urls[0], f"Error parsing API response JSON: {str(e)}. Using the first image as a fallback.")
-            return (None, f"Error parsing API response JSON: {str(e)}")
+            print(f"JSON parsing error: {str(e)}")
+            return (None, f"JSON parsing error: {str(e)}")
         except Exception as e:
-            print(f"Unexpected error during image selection: {str(e)}")
-            # Fallback on any other unexpected error
-            if processed_image_urls:
-                 return (processed_image_urls[0], f"Unexpected error during image selection: {str(e)}. Using the first image as a fallback.")
-            return (None, f"Unexpected error during image selection: {str(e)}") 
+            print(f"Unexpected error: {str(e)}")
+            return (None, f"Unexpected error: {str(e)}") 
